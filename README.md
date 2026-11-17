@@ -112,11 +112,11 @@ The following example installs LAB and runs one task, then evaluates and reports
 its result. Model-backed runs incur API costs; start with a small task selection.
 
 ```bash
-harness2-setup lab
-harness2-check --bench lab
+harness2-setup lab &&
+harness2-check --bench lab &&
 harness2 --bench lab --k 1 --mode parallel \
-  --only-domains antitrust-competition --max-tasks 1
-harness2-judge --bench lab --k 1 --mode parallel
+  --only-domains antitrust-competition --max-tasks 1 &&
+harness2-judge --bench lab --k 1 --mode parallel &&
 harness2-report --bench lab --k 1 --mode parallel
 ```
 

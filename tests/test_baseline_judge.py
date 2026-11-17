@@ -28,7 +28,7 @@ from harness2.core.selection import Selection
 
 
 class BaselineJudgeTests(unittest.TestCase):
-    def judge_cached(self, payload, *, bases=True):
+    def judge_cached(self, payload, *, bases=True, solver="fixture/executor", judge="fixture-judge"):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             run = root / "local-run"
@@ -64,8 +64,9 @@ class BaselineJudgeTests(unittest.TestCase):
             }
             env.update(
                 HARNESS2_RUNS_DIR=str(root),
-                HARNESS2_SOLVER_MODEL="fixture/executor",
-                HARNESS2_JUDGE_MODEL="fixture-judge",
+                HARNESS2_SOLVER_MODEL=solver,
+                HARNESS2_IMPROVER_MODEL="",
+                HARNESS2_JUDGE_MODEL=judge,
                 PYTHONDONTWRITEBYTECODE="1",
             )
             command = [
@@ -93,6 +94,24 @@ class BaselineJudgeTests(unittest.TestCase):
             return process, json.loads(
                 cache.read_text(encoding="utf-8")
             ) if cache.is_file() else None
+
+    def test_standalone_judging_does_not_require_executor_configuration(self):
+        for bases in (False, True):
+            with self.subTest(bases=bases):
+                result, rows = self.judge_cached(
+                    {"n_passed": 1, "n_criteria": 1, "all_pass": True},
+                    bases=bases,
+                    solver="",
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(len(rows), 1)
+
+    def test_missing_judge_configuration_is_actionable_without_traceback(self):
+        result, rows = self.judge_cached({}, solver="", judge="")
+        self.assertEqual(result.returncode, 1)
+        self.assertIsNone(rows)
+        self.assertIn("HARNESS2_JUDGE_MODEL is required", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_missing_or_nonpositive_criteria_are_ungraded(self):
         for criteria in (None, 0, -1):

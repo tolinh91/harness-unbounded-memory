@@ -30,6 +30,8 @@ SCRATCH_BASE = Path(os.environ.get("ADAPT_LABCX_SCRATCH")
 RESULTS_ROOT = Path(os.environ.get("ADAPT_LABCX_RESULTS", str(RUNNER_DIR / "results")))
 CODEX_BIN = Path(os.environ.get("ADAPT_LABCX_CODEX_BIN",
                                 str(Path.home() / ".local" / "bin" / "codex")))
+AUTH_MODE = os.environ.get("ADAPT_LABCX_AUTH_MODE", "api")
+LOGIN_HOME = Path(os.environ.get("ADAPT_LABCX_LOGIN_HOME", str(Path.home() / ".codex"))).expanduser().resolve()
 BASE_URL = os.environ.get("ADAPT_LABCX_BASE_URL", "")
 VERTEX_PROXY_KEY = os.environ.get("VERTEX_PROXY_KEY", "")
 DEFAULT_MODEL = os.environ.get("ADAPT_LABCX_MODEL", "")
@@ -229,6 +231,11 @@ def main(args) -> int:
     if not CODEX_BIN.is_file():
         raise SystemExit(f"codex binary not found: {CODEX_BIN} (ADAPT_LABCX_CODEX_BIN)")
 
+    if AUTH_MODE == "chatgpt" and (
+        LOGIN_HOME == SCRATCH_BASE.resolve() or SCRATCH_BASE.resolve() in LOGIN_HOME.parents
+    ):
+        raise SystemExit("Codex login home must be outside the runner scratch directory")
+
     label = args.run_id.replace("/", "__")
     run_dir = run_dir_for(args.run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -256,17 +263,21 @@ def main(args) -> int:
         harness_dir = Path(args.harness_dir).resolve() if args.harness_dir else None
         installed = install_harness(ws, harness_dir)
 
-        codex_home.mkdir(parents=True)
-        (codex_home / "config.toml").write_text(
-            CONFIG_TOML_TEMPLATE.format(model=args.model, base_url=BASE_URL, workspace=ws),
-            encoding="utf-8")
+        runtime_home = LOGIN_HOME if AUTH_MODE == "chatgpt" else codex_home
+        if AUTH_MODE == "api":
+            codex_home.mkdir(parents=True)
+            (codex_home / "config.toml").write_text(
+                CONFIG_TOML_TEMPLATE.format(model=args.model, base_url=BASE_URL, workspace=ws),
+                encoding="utf-8")
+        elif AUTH_MODE != "chatgpt":
+            raise SystemExit("ADAPT_LABCX_AUTH_MODE must be api or chatgpt")
 
         config = {
             "runner": "codex",
             "codex_bin": str(CODEX_BIN),
             "codex_version": "codex-cli 0.144.6",
             "model": args.model,
-            "model_chain": f"codex -> {BASE_URL} (Responses API)",
+            "model_chain": "codex -> ChatGPT login" if AUTH_MODE == "chatgpt" else f"codex -> {BASE_URL} (Responses API)",
             "reasoning_effort": args.reasoning_effort,
             "task": args.task,
             "run_id": args.run_id,
@@ -275,7 +286,7 @@ def main(args) -> int:
             "harness_files": installed,
             "doc_parser": args.doc_parser,
             "workspace": str(ws),
-            "codex_home": str(codex_home),
+            "codex_home": str(runtime_home),
             "started_at": started,
         }
         (run_dir / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
@@ -284,7 +295,7 @@ def main(args) -> int:
         env.pop("OPENAI_BASE_URL", None)     # would flip codex auth validation; unused anyway
         env.pop("XDG_DATA_HOME", None)       # read_doc.py sandbox mode needs podman's store
         env.update({
-            "CODEX_HOME": str(codex_home),
+            "CODEX_HOME": str(runtime_home),
             "VERTEX_PROXY_KEY": VERTEX_PROXY_KEY,
             "LAB_DOC_PARSER": args.doc_parser,
             "LAB_BENCH_ROOT": str(REPO),
@@ -303,6 +314,11 @@ def main(args) -> int:
             "-C", str(ws),
             "--add-dir", str(ws),
         ]
+        if AUTH_MODE == "chatgpt":
+            env.pop("VERTEX_PROXY_KEY", None)
+            env.pop("OPENAI_API_KEY", None)
+            cmd.extend(["-c", 'model_provider="openai"',
+                        "-c", 'forced_login_method="chatgpt"'])
         session_path = run_dir / "codex_session.jsonl"
         with open(session_path, "w", encoding="utf-8") as out, \
              open(run_dir / "codex_stderr.log", "w", encoding="utf-8") as err:

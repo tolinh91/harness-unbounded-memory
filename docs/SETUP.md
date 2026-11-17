@@ -111,6 +111,34 @@ return a nonzero exit status when incomplete.
 
 ## Codex executor
 
+### ChatGPT login (LAB executor)
+
+For LAB, the Codex executor can reuse a ChatGPT login without a Responses API
+endpoint or API key. Set these in `.env`:
+
+```dotenv
+HARNESS2_CODEX_AUTH_MODE=chatgpt
+HARNESS2_CODEX_MODEL=<model available to your Codex account>
+```
+
+Run `codex login` (or `codex login --device-auth` on a headless machine), then
+`harness2-setup lab --substrate cx`. Use `--substrate cx` for checks, adaptation,
+judging, and reporting. The runner uses `~/.codex` for login state; set
+`HARNESS2_CODEX_LOGIN_HOME` to use another directory. Authenticate into that same
+home. Keep it outside the benchmark scratch/output directories. The runner uses
+your existing Codex home and configuration, overrides the provider to `openai`,
+and requires ChatGPT authentication. Codex can refresh credentials there; the
+runner does not copy or delete your login files.
+
+This option applies only to the LAB executor. The improver still requires
+`HARNESS2_IMPROVER_MODEL` in OpenCode `provider/model` syntax and its provider
+credentials. The LAB judge still requires `HARNESS2_JUDGE_MODEL` and its provider
+credentials. `HARNESS2_SOLVER_MODEL` is optional for Codex when the Codex and
+improver models are explicitly set. JobBench and WorkBuddy continue to require
+API endpoint mode.
+
+### Responses API endpoint
+
 The Codex executor connects to a Responses API endpoint. For Gemini on Vertex
 AI, the included `harness2-bridge` provides this interface through a local
 LiteLLM server, using the same Application Default Credentials and

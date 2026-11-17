@@ -16,10 +16,10 @@ groups tasks by practice area and removes criteria from the material passed to
 the improver. Needs Pandoc and Poppler.
 
 ```bash
-harness2-setup lab
-harness2-check --bench lab
-harness2 --bench lab --k 1 --mode parallel
-harness2-judge --bench lab --k 1 --mode parallel
+harness2-setup lab &&
+harness2-check --bench lab &&
+harness2 --bench lab --k 1 --mode parallel &&
+harness2-judge --bench lab --k 1 --mode parallel &&
 harness2-report --bench lab --k 1 --mode parallel
 ```
 
@@ -46,10 +46,10 @@ Professional tasks, with the library grouped by the dataset's occupation
 directories.
 
 ```bash
-harness2-setup jb
-harness2-check --bench jb
-harness2 --bench jb --k 1 --mode parallel
-harness2-judge --bench jb --k 1 --mode parallel
+harness2-setup jb &&
+harness2-check --bench jb &&
+harness2 --bench jb --k 1 --mode parallel &&
+harness2-judge --bench jb --k 1 --mode parallel &&
 harness2-report --bench jb --k 1 --mode parallel
 ```
 
@@ -84,10 +84,10 @@ retain that license.
 
 ```bash
 docker info
-harness2-setup wb --subset office
-harness2-check --bench wb --subset office
-harness2 --bench wb --subset office --k 1 --mode parallel
-harness2-judge --bench wb --subset office --k 1 --mode parallel
+harness2-setup wb --subset office &&
+harness2-check --bench wb --subset office &&
+harness2 --bench wb --subset office --k 1 --mode parallel &&
+harness2-judge --bench wb --subset office --k 1 --mode parallel &&
 harness2-report --bench wb --subset office --k 1 --mode parallel
 ```
 
