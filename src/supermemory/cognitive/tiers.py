@@ -1,0 +1,288 @@
+"""4-Tier Cognitive Memory Hierarchy (Working, Procedural, Semantic, Episodic) & Consolidation."""
+
+from __future__ import annotations
+
+import re
+from typing import Any, Dict, List
+
+from supermemory.cognitive.outcome_ledger import (
+    build_split_consolidation_digest,
+    format_capsule_outcome_blocks,
+)
+from supermemory.models import EdgeType, MemoryEdge, MemoryNode, MemoryTier, NodeType, utc_now_iso
+from supermemory.storage.sqlite_store import GraphStore
+
+_PROCEDURAL_TYPES = {NodeType.LAW.value, NodeType.PROCEDURE.value, NodeType.GATE.value, NodeType.ALGORITHM.value}
+_SEMANTIC_TYPES = {
+    NodeType.KNOWLEDGE_NODE.value, NodeType.OBSERVATION.value, NodeType.IDEA.value,
+    NodeType.DECISION.value, NodeType.BOTTLENECK.value, NodeType.RESEARCH_QUESTION.value, NodeType.METHOD_CARD.value,
+}
+
+
+def classify_tier(node: MemoryNode | Dict[str, Any]) -> str:
+    """Map any graph node into WORKING, PROCEDURAL, SEMANTIC, or EPISODIC tier."""
+    meta = node.metadata if isinstance(node, MemoryNode) else (node.get("metadata") or {})
+    ntype = node.node_type if isinstance(node, MemoryNode) else str(node.get("node_type") or "")
+    explicit = str(meta.get("memory_tier") or "").upper()
+    if explicit in {t.value for t in MemoryTier}:
+        return explicit
+    if ntype in _PROCEDURAL_TYPES:
+        return MemoryTier.PROCEDURAL.value
+    if ntype in _SEMANTIC_TYPES:
+        return MemoryTier.SEMANTIC.value
+    return MemoryTier.EPISODIC.value
+
+
+def _est_tokens(text: str) -> int:
+    return max(1, len(text or "") // 4)
+
+
+def compute_tier_telemetry(store: GraphStore) -> Dict[str, Any]:
+    """Compute per-tier node counts, consolidated counts, and context token savings."""
+    nodes = store.list_nodes(limit=10000)
+    counts = {t.value: 0 for t in MemoryTier}
+    raw_tokens_by_tier = {t.value: 0 for t in MemoryTier}
+    consolidated_count = 0
+
+    for n in nodes:
+        tier = classify_tier(n)
+        counts[tier] = counts.get(tier, 0) + 1
+        raw_tokens_by_tier[tier] += _est_tokens(f"{n.title} {n.summary} {n.content}")
+        if n.status == "CONSOLIDATED" or (n.metadata or {}).get("consolidated"):
+            consolidated_count += 1
+
+    capsule = build_tiered_capsule(store)
+    active_prompt_tokens = _est_tokens(capsule)
+    total_vault_tokens = sum(raw_tokens_by_tier.values())
+    saved_pct = (
+        round((1.0 - min(1.0, active_prompt_tokens / max(1, total_vault_tokens))) * 100.0, 1)
+        if total_vault_tokens > active_prompt_tokens
+        else 0.0
+    )
+    return {
+        "counts_by_tier": counts,
+        "raw_tokens_by_tier": raw_tokens_by_tier,
+        "active_prompt_tokens": active_prompt_tokens,
+        "total_vault_tokens": total_vault_tokens,
+        "context_compression_pct": saved_pct,
+        "consolidated_episodes": consolidated_count,
+    }
+
+
+_BASE_LAW_IDS = {f"LAW-0{i}" for i in range(1, 9)}
+
+
+def _trim_capsule_blocks(blocks: List[tuple[int, str]], max_tokens: int) -> str:
+    """Drop lowest-priority blocks (4 -> 1) until capsule strictly fits `max_tokens`."""
+    kept = list(blocks)
+    while len(kept) > 1 and _est_tokens("\n".join(txt for _, txt in kept)) > max_tokens:
+        droppable = [idx for idx, (prio, _) in enumerate(kept) if prio > 0]
+        if not droppable:
+            break
+        worst_idx = max(droppable, key=lambda idx: (kept[idx][0], idx))
+        kept.pop(worst_idx)
+    out = "\n".join(txt for _, txt in kept)
+    char_cap = max(120, max_tokens * 4)
+    return out[: char_cap - 1] + "…" if len(out) > char_cap else out
+
+
+def build_tiered_capsule(
+    store: GraphStore,
+    query: str = "",
+    global_rules: List[str] | None = None,
+    max_tokens: int = 800,
+) -> str:
+    """Compile strictly token-budgeted L0 Working + L1 Procedural + L2 Semantic capsule (<850 tokens)."""
+    meta = store.get_all_meta()
+    proj = meta.get("project_name") or store.workspace_root.name
+    goal = (meta.get("active_goal") or "Maintain 100% constitutional compliance.")[:180]
+    next_act = (meta.get("next_actions") or "Check recall before editing; commit memory before stopping.")[:180]
+
+    laws = sorted(store.list_nodes(node_types=[NodeType.LAW.value], limit=16), key=lambda x: x.id)
+    procs = store.list_nodes(node_types=[NodeType.PROCEDURE.value], limit=6)
+    gates = store.list_gates(enabled_only=True)
+    proposals = [
+        p
+        for p in store.list_nodes(node_types=[NodeType.PROPOSAL.value], limit=100)
+        if p.status not in ("ARCHIVED", "REJECTED", "AUDITED", "CONSOLIDATED")
+    ]
+    proposals.sort(key=lambda p: p.id, reverse=True)
+    bottlenecks = [b for b in store.list_nodes(node_types=[NodeType.BOTTLENECK.value], limit=100) if b.status not in ("RESOLVED", "ARCHIVED", "CONSOLIDATED")]
+    bottlenecks.sort(key=lambda b: float(b.metadata.get("error_share_pct") or 0.0) * float(b.metadata.get("ceiling_gain") or 0.1), reverse=True)
+    exps_all = store.list_experiments()
+    exps = exps_all[:2]
+    scored_exps = [e for e in exps_all if e.verdict not in ("REVERT", "FAILED", "REJECTED") and (e.test_score is not None or e.cv_score is not None)]
+    sota = max(scored_exps, key=lambda x: float(x.test_score if x.test_score is not None else (x.cv_score or 0.0))) if scored_exps else None
+    dead_end_count = sum(1 for n in store.list_nodes(limit=2000) if n.status in ("REJECTED", "REVERT", "FAILED"))
+
+    blocks: List[tuple[int, str]] = [
+        (0, f"🧠 SUPERMEMORY CONSTITUTIONAL HARNESS ACTIVE — Project: `{proj}`"),
+        (0, f"• [L0 WORKING] Goal: {goal}"),
+        (0, f"• [L0 WORKING] Next: {next_act}"),
+    ]
+    if sota or dead_end_count:
+        sota_txt = (
+            f"🏆 Best SOTA: `{sota.exp_id}` ({sota.track} = {sota.test_score if sota.test_score is not None else sota.cv_score})"
+            if sota
+            else "🏆 Best SOTA: None yet"
+        )
+        blocks.append((0, f"• [L0 SCOREBOARD] {sota_txt} | Falsified Dead-Ends (Never Repeat): {dead_end_count}"))
+        blocks.extend(format_capsule_outcome_blocks(store))
+    if bottlenecks:
+        bnk_txt = " | ".join(
+            f"`{b.id}`({b.metadata.get('error_share_pct', 0)}% err, +{b.metadata.get('ceiling_gain', 0)} ceil) {b.title[:40]}"
+            for b in bottlenecks[:3]
+        )
+        blocks.append((1, f"• [L0 BOTTLENECKS — Fix Highest Pareto First]: {bnk_txt}"))
+    if proposals:
+        p_parts = []
+        for p in proposals[:3]:
+            t_tot = len(p.metadata.get("tasks") or [])
+            t_done = sum(1 for x in (p.metadata.get("tasks_done") or []) if x)
+            prog = f" {t_done}/{t_tot}" if t_tot else ""
+            p_parts.append(f"`{p.id}`[{p.status}{prog}] {p.title[:42]}")
+        blocks.append((2, "• [L0 WORKING] Active Proposals: " + " | ".join(p_parts)))
+    dag_rows = store.conn.execute(
+        "SELECT task_id, status, title FROM agent_tasks WHERE status IN ('RUNNING', 'QUEUED') ORDER BY status DESC, task_id DESC LIMIT 4"
+    ).fetchall()
+    if dag_rows:
+        blocks.append((2, "• [L0 KANBAN TASKS]: " + " | ".join(f"`{r['task_id']}`[{r['status']}] {str(r['title'])[:38]}" for r in dag_rows)))
+    mcards = [
+        m for m in store.list_nodes(node_types=[NodeType.METHOD_CARD.value], limit=6)
+        if m.status not in ("REJECTED", "ARCHIVED", "CONSOLIDATED")
+    ]
+    if mcards:
+        mc_txt = " | ".join(f"`{m.id}`({m.metadata.get('venue', 'SOTA')} {m.metadata.get('year', '')}) {m.title[:38]}" for m in mcards[:3])
+        blocks.append((2, f"• [L2 METHOD VAULT — Saved SOTA Cards]: {mc_txt}"))
+
+    has_agents_md = (store.workspace_root / "AGENTS.md").is_file()
+    law_note = " (active in AGENTS.md)" if has_agents_md else ":"
+    blocks.append((1, f"• [L1 PROCEDURAL] {len(laws)} Laws{law_note} | {len(procs)} Procedures | {len(gates)} PreToolUse Gates"))
+    shown_laws = [lw for lw in laws if lw.id not in _BASE_LAW_IDS][:6] if has_agents_md else laws[:8]
+    for lw in shown_laws:
+        blocks.append((2, f"  - `{lw.id}`: {lw.title[:78]}"))
+    for pr in procs[:4]:
+        blocks.append((2, f"  - `{pr.id}` (Procedure): {pr.title[:78]}"))
+    for gr in (global_rules or [])[:4]:
+        blocks.append((2, f"  - [GLOBAL] {gr[:85]}"))
+
+    if query.strip():
+        hits = store.search_fts(query, limit=6)
+        sem_lines = [
+            f"  - [{classify_tier(nd)}/{nd.node_type}] `{nd.id}`: {nd.title[:55]} — {nd.summary[:95]}"
+            for nd, _ in hits
+            if nd.status != "CONSOLIDATED"
+            and (classify_tier(nd) == MemoryTier.SEMANTIC.value or nd.status in ("REJECTED", "REVERT", "FAILED", "FAILURE_INSIGHT"))
+        ]
+        if sem_lines:
+            blocks.append((3, "• [L2 SEMANTIC RECALL — Progressive Disclosure]:"))
+            for sl in sem_lines[:4]:
+                blocks.append((3, sl))
+
+    if exps:
+        blocks.append((
+            4,
+            "• [L3 EPISODIC POINTERS — Paged on Disk]: "
+            + " | ".join(f"`{x.exp_id}`({x.verdict}: {x.test_summary[:28] or x.cv_summary[:28]})" for x in exps),
+        ))
+    return _trim_capsule_blocks(blocks, max_tokens=max_tokens)
+
+
+def _next_tier_id(store: GraphStore, prefix: str, ntype: str) -> str:
+    existing = store.list_nodes(node_types=[ntype], limit=5000)
+    nums = [int(m.group(1)) for n in existing for m in [re.match(rf"^{re.escape(prefix)}-(\d+)$", n.id)] if m]
+    return f"{prefix}-{(max(nums) + 1) if nums else 1:03d}"
+
+
+def consolidate_nodes(
+    store: GraphStore,
+    source_ids: List[str],
+    target_tier: str,
+    title: str,
+    summary: str,
+    content: str = "",
+) -> Dict[str, Any]:
+    """Distill multiple Episodic/Semantic nodes into 1 Semantic Knowledge or Procedural node."""
+    clean_ids = [s.strip() for s in source_ids if s and s.strip()]
+    if not clean_ids:
+        raise ValueError("Provide at least one source node ID to consolidate.")
+    sources = [n for nid in clean_ids for n in [store.get_node(nid)] if n is not None]
+    if not sources:
+        raise ValueError(f"None of the source IDs exist: {clean_ids}")
+
+    tier_up = target_tier.strip().upper()
+    if tier_up == MemoryTier.PROCEDURAL.value:
+        ntype = NodeType.PROCEDURE.value
+        new_id = _next_tier_id(store, "PROC", ntype)
+    else:
+        tier_up = MemoryTier.SEMANTIC.value
+        ntype = NodeType.KNOWLEDGE_NODE.value
+        new_id = _next_tier_id(store, "SEM", ntype)
+
+    merged_trace = "\n".join(f"- **`{s.id}`** (`{s.node_type}`): {s.title} — {s.summary[:140]}" for s in sources)
+    full_md = (
+        f"# {new_id} [{tier_up}]: {title}\n\n"
+        f"- **Consolidated At:** `{utc_now_iso()}`\n"
+        f"- **Distilled Summary:** {summary}\n\n"
+        f"## Synthesized Principle / Knowledge\n\n{content or summary}\n\n"
+        f"## Consolidated Source Lineage ({len(sources)} nodes)\n\n{merged_trace}\n"
+    )
+    kn_dir = store.mem_dir / "06_KNOWLEDGE_NODES"
+    kn_dir.mkdir(parents=True, exist_ok=True)
+    rel_path = f"memory/06_KNOWLEDGE_NODES/{new_id}.md"
+    (store.workspace_root / rel_path).write_text(full_md, encoding="utf-8")
+
+    distilled = store.upsert_node(
+        MemoryNode(
+            id=new_id,
+            node_type=ntype,
+            title=title,
+            status="ACTIVE",
+            summary=summary[:240],
+            content=full_md,
+            file_path=rel_path,
+            tags=["consolidated", tier_up.lower(), ntype.lower()],
+            priority=92 if tier_up == MemoryTier.PROCEDURAL.value else 89,
+            metadata={"memory_tier": tier_up, "source_ids": [s.id for s in sources]},
+        )
+    )
+    archived_ids: List[str] = []
+    for src in sources:
+        store.add_edge(MemoryEdge(source_id=src.id, target_id=new_id, relation=EdgeType.CONSOLIDATED_INTO.value))
+        if classify_tier(src) == MemoryTier.EPISODIC.value and src.node_type != NodeType.LAW.value:
+            src.metadata["consolidated"] = True
+            src.metadata["consolidated_into"] = new_id
+            if src.status.upper() not in ("REVERT", "FAILED", "REJECTED", "DISCARD", "EARLY_KILLED"):
+                src.status = "CONSOLIDATED"
+            store.upsert_node(src, log_event=False)
+            archived_ids.append(src.id)
+
+    store.log_event("MEMORY_CONSOLIDATION", new_id, f"Consolidated {[s.id for s in sources]} -> {new_id} ({tier_up})")
+    return {"created_node": distilled.to_dict(), "consolidated_sources": archived_ids}
+
+
+def auto_consolidate_episodic(store: GraphStore, min_cluster_size: int = 3) -> Dict[str, Any]:
+    """Automatically group unconsolidated Episodic experiments by track into split Pass/Fail Semantic digests."""
+    exps = [
+        n for n in store.list_nodes(node_types=[NodeType.EXPERIMENT.value], limit=2000)
+        if n.status not in ("CONSOLIDATED", "VICTORY_CONFIRMED") and not (n.metadata or {}).get("consolidated")
+    ]
+    by_track: Dict[str, List[MemoryNode]] = {}
+    for n in exps:
+        by_track.setdefault(str(n.metadata.get("track") or "main"), []).append(n)
+
+    created = []
+    for tr, items in by_track.items():
+        if len(items) >= min_cluster_size:
+            batch = items[:-1] if len(items) > min_cluster_size else items
+            summary, split_body = build_split_consolidation_digest(store, tr, batch)
+            res = consolidate_nodes(
+                store,
+                source_ids=[b.id for b in batch],
+                target_tier=MemoryTier.SEMANTIC.value,
+                title=f"Distilled Track Ledger: {tr.upper()} ({len(batch)} runs)",
+                summary=summary,
+                content=split_body,
+            )
+            created.append(res["created_node"]["id"])
+    return {"created_semantic_nodes": created, "count": len(created)}

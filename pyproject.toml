@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "research-supermemory"
+version = "3.5.1"
+description = "Research SuperMemory: Zero-Amnesia 4-Tier Cognitive Graph, Self-Learning Constitutional CodeGates, Single-Variable Scientific Experiment Registry, and Daylight Architectural Studio for Antigravity & Multi-Agent R&D."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Vo Thanh Nguyen" }]
+keywords = [
+    "antigravity",
+    "research-agent",
+    "supermemory",
+    "agent-harness",
+    "knowledge-graph",
+    "self-learning",
+    "mcp",
+    "experiment-tracking",
+    "anti-regression",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/vtnguyen04/research-supermemory"
+Repository = "https://github.com/vtnguyen04/research-supermemory"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+]
+
+[project.scripts]
+supermemory = "supermemory.cli:main"
+research-supermemory = "supermemory.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+supermemory = ["ui/static/*", "_plugin_bundle/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 108
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+ignore_missing_imports = true
+warn_unused_ignores = true
+check_untyped_defs = true
